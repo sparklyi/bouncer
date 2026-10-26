@@ -1,0 +1,9 @@
+{
+  "name": "bouncer-web",
+  "private": true,
+  "type": "module",
+  "description": "Browser solver for bouncer: no build step, no dependencies",
+  "scripts": {
+    "test": "node --test"
+  }
+}
