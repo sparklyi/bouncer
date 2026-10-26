@@ -1,16 +1,16 @@
 # bouncer design
 
-Status: approved 2026-10-27. This document is the single source of truth for the
+Status: implemented for v0.1.0. This document is the source of truth for the
 public API and protocol until v1.0.0.
 
 ## 1. Positioning
 
 A Go library that makes human verification a composable core: zero third-party
-dependencies, no images, no fingerprinting, one SHA-256 per server-side check.
+dependencies, no images in the default path, one SHA-256 per server-side check.
 Replay protection, attempt budgets and HTTP integration are correct by default.
 
-It proves computational work, not humanity. It is not an image CAPTCHA library,
-not a risk engine, not a service.
+It proves computational and interaction effort, not humanity. It is not an image
+CAPTCHA library, not a risk engine, not a service.
 
 ## 2. Three layers
 
@@ -18,17 +18,15 @@ not a risk engine, not a service.
 | --- | --- | --- |
 | L0 state | AEAD-sealed ticket; answer never sent to the client; atomic one-time redemption (`Consume`); attempt budget (`Attempt`); subject binding; TTL | 1 atomic store op |
 | L1 cost | Proof of work: `SHA-256("bouncer/pow/v1" || salt16 || nonce_be64)`, `degree` leading zero bits; difficulty escalates with failures | 1 hash |
-| L2 interaction | Slide challenge; server scores pointer trajectory (velocity shape, dt entropy, reversals, event count, pointer type); the target `x` is sealed and never sent | tens of float ops |
+| L2 interaction | Slide challenge; server scores pointer trajectory; the target `x` is sealed and never sent | tens of float ops + one PNG decode-free check |
 
-Escalation: `0-1 failures → degree 18`, `2-3 → degree 20`, `4-5 → degree 22`,
-`>=6 → slide`. The caller may force a tier and pass a risk hint; the library does not
-implement a risk engine.
+Escalation (`Escalate(failures) (Tier, uint8)`): `0-1 → 18 bits`, `2-3 → 20`,
+`4-5 → 22`, `>=6 → slide`. The caller owns the failure count and may force a tier.
 
-**L1 is a rate limiter, not an economic wall.** A 20-bit challenge costs one RTX 4090
-about 50 microseconds and a browser about a second, so PoW prices out non-JS clients
-and makes attacker volume linear in CPU, while human-solve farms stay 3-4 orders of
-magnitude cheaper. The README must say this. The economics of L0 (per-ticket salt,
-short TTL, one-time redemption, subject binding) matter more than the bit count.
+**L1 is a rate limiter, not an economic wall.** A 20-bit challenge costs one RTX
+4090 about 50 microseconds and a browser about a second, so PoW prices out
+non-JS clients and makes attacker volume linear in CPU. The economics come from
+L0: per-ticket salt, short TTL, one-time redemption, subject binding.
 
 ## 3. Ticket format
 
@@ -39,34 +37,27 @@ header (cleartext, authenticated as AAD):
   1B ver | 2B kid | 1B type_len | nB type
 
 plaintext (AES-256-GCM):
-  1B degree | 8B issued_at | 8B expires_at | 1B sub_len | sB subject
-  | 16B id (jti) | 2B state_len | mB state
+  1B ver | 1B degree | 8B issued_at | 8B expires_at | 1B sub_len | sB subject
+  | 16B jti | 2B state_len | mB state
 ```
 
-- Keys: `tokenKey = HKDF-SHA256(ikm=secret, salt="bouncer.v1", info="token-aead")`,
-  derived once at construction. `kid = SHA256(key)[:2]`; rotation keeps previous keys
-  for decryption. Two bytes, because a 1-byte id collides with probability 1.17% at
-  three keys and the format is still unfrozen.
-- `type` is in the cleartext header because AAD must be known *before* decryption.
-  Binding it as `AAD = "bouncer.v1" || header` keeps the cross-type guarantee without
-  the chicken-and-egg deadlock.
-- Binary, not JSON: smaller, strict length-checked parsing, no type ambiguity.
-- Sealed, not signed: future challenges have private answers; the protocol must not
-  change when they land.
+- `tokenKey = HKDF-SHA256(ikm=secret, salt="bouncer.v1", info="token-aead")`,
+  derived once. `kid = SHA256(key)[:2]`; previous keys decrypt only.
+- `type` is in the cleartext header because AAD must exist before decryption;
+  `AAD = "bouncer.v1" || header` prevents cross-type confusion.
+- Sealed, not signed: future challenges have private answers.
+- Binary, not JSON: strict length-checked parsing, no type ambiguity, ~110 bytes.
 
 ## 4. Verification order
 
 ```
-parse header → AEAD decrypt (AAD = header) → type match → expiry → subject binding
-             → Challenger.Verify → store.Consume(id)
+parse header → AEAD decrypt → type match → expiry → subject binding
+             → Store.Attempt (only for attempt-limited challenges)
+             → Challenger.Verify → Store.Consume
 ```
 
-Consume is last on purpose: consuming first lets anyone holding a ticket burn it with
-a garbage answer. Challenges that need attempt limits (slide) use `store.Attempt`
-before verification; PoW needs no attempt limit because guessing is solving.
-
-Ticket padding: when the subject length is sensitive, pad the plaintext to 16-byte
-buckets so raw base64 length does not leak it. Off by default (costs up to 22 chars).
+Consume is last so that a wrong answer cannot burn a ticket. Challenges whose
+answer is guessable declare `MaxAttempts()`.
 
 ## 5. Public API
 
@@ -74,30 +65,31 @@ buckets so raw base64 length does not leak it. Off by default (costs up to 22 ch
 package bouncer
 
 type Tier uint8
-const (TierState Tier = iota; TierPoW; TierSlide)
+const (TierPoW Tier = iota; TierSlide)
+func Escalate(failures int) (Tier, uint8)
 
 type Gate struct{}
 func New(opts ...Option) (*Gate, error)
 func (g *Gate) Issue(ctx context.Context, req Request) (*Challenge, error)
 func (g *Gate) Verify(ctx context.Context, sol Solution, opts ...VerifyOption) (*Verdict, error)
+func (g *Gate) IssuePass(ctx context.Context, subject string, ttl time.Duration) (string, time.Time, error)
+func (g *Gate) VerifyPass(ctx context.Context, token string, opts ...VerifyOption) (*Verdict, error)
 func (g *Gate) Close() error
 
-type Request struct{ Subject string; Tier Tier; Risk int }
+type Request struct{ Subject string; Tier Tier; Degree uint8 }
 type Challenge struct{ ID, Type, Token string; Expires time.Time; Params json.RawMessage }
-type Solution struct{ Token, Answer string }        // slog.LogValuer, redacted
+type Solution struct{ Token, Answer string } // slog.LogValuer, redacted
 type Verdict struct{ Type, Subject string; Degree uint8; IssuedAt time.Time }
+type PointerEvent struct{ X, Y int; T int64; PointerType string; Buttons int }
 
 type Challenger interface {
+    Tier() Tier
     Type() string
-    Issue(ctx context.Context, in IssueInput) (params json.RawMessage, state []byte, err error)
+    Issue(ctx context.Context, in IssueInput) (params []byte, state []byte, err error)
     Verify(ctx context.Context, in VerifyInput) error
 }
 type IssueInput struct{ Degree uint8 }
 type VerifyInput struct{ Params json.RawMessage; State []byte; Answer string }
-
-type InteractionValidator interface { ValidateInteraction(ctx context.Context, in InteractionInput) error }
-type InteractionInput struct{ State []byte; Events []PointerEvent; Started time.Time }
-type PointerEvent struct{ X, Y, T int; PointerType string; Buttons int }
 
 type Store interface {
     Attempt(ctx context.Context, id string, ttl time.Duration, max int32) (n int32, exceeded bool, err error)
@@ -106,47 +98,71 @@ type Store interface {
 type Clock interface{ Now() time.Time }
 
 func WithSecret(secret []byte, previous ...[]byte) Option
-func WithChallenger(c Challenger) Option
-func WithStore(s Store) Option              // default bounded memory, 65536 entries
-func WithStoreFailure(m FailureMode) Option // Consume, default FailClosed
-func WithAttemptFailure(m FailureMode) Option // Attempt, default FailClosed
-func WithTTL(d time.Duration) Option         // default 3m, max 15m
-func WithDegree(bits uint8) Option           // default 18, clamp [16,24]
+func WithChallenger(ch Challenger) Option       // registered by ch.Tier()
+func WithStore(s Store) Option                  // default bounded memory
+func WithStoreFailure(m FailureMode) Option     // Consume, default FailClosed
+func WithAttemptFailure(m FailureMode) Option   // Attempt, default FailClosed
+func WithTTL(d time.Duration) Option            // default 3m, max 15m
+func WithDegree(bits uint8) Option              // default 18, clamp [16,24]
 func WithClock(c Clock) Option
-func BoundToSubject(subject string) VerifyOption
+func WithLogger(l *slog.Logger) Option
 
-func Escalate(failures int) Tier
+func BoundToSubject(subject string) VerifyOption
+func ReusePass() VerifyOption
 ```
 
-Subpackages: `pow`, `store/memory`, `store/redis` (separate go.mod), `httpx`,
-`challengetest`, `store/storetest`, `web` (1 KB worker solver), `attack`, `bench`.
+Subpackages:
 
-Wire protocol (http): `POST /_bouncer/challenge` → 201 `{id,type,token,expires_at,params}`;
-`POST /_bouncer/verify` → 200 + `Set-Cookie: bouncer_pass` (10 min, HttpOnly, Secure,
-SameSite=Lax) or 4xx `{error}`.
+- `pow`: primitives (`Tag`, `Params`, `Preimage`, `Hash`, `Verify`, `Solve`,
+  `ParseAnswer`, `FormatAnswer`).
+- `slide`: `New(opts...) *Challenge` implementing `bouncer.Challenger`, plus
+  procedural backgrounds and trajectory scoring.
+- `store/memory`: the default bounded `Store` (65,536 entries, sharded).
+- `store/storetest`, `challengetest`: contract suites for third-party adapters.
+- `httpx`: `ChallengeHandler`, `VerifyHandler`, `Protect`, `VerifyPass`,
+  `FromContext`, `StatusCode`, cookie options.
+- `web`: zero-dependency browser solver (worker + helper, no build step).
 
-## 6. PoW parameters
+`store/redis` is a separate module (`github.com/sparklyi/bouncer/store/redis`)
+so the core module never gains a dependency.
 
-- Preimage is 37 bytes (`"bouncer/pow/v1"` (16) || salt (16) || nonce_be64 (8)), which
-  fits one SHA-256 block. Keep it at or below 55 bytes; a second block doubles cost.
-- Answer is exactly 16 lowercase hex characters. Reject `0x`, leading-zero variants,
-  `+`, whitespace, and overlength. (Anubis accepts `007` and `7` as distinct answers;
-  do not repeat that.)
-- Difficulty comes only from sealed state. The verifier never reads it from `Params`
-  or the answer, and a test asserts a client-supplied degree is ignored.
-- Base 18 for browser traffic; p50 ~0.3 s and p99 ~2 s on a mid-range phone. Degrees
-  above 24 are refused by the shipped web solver (fail closed).
+## 6. HTTP contract
 
-## 7. Slide parameters
+```
+POST /_bouncer/challenge   {"tier":"pow"|"slide","degree":N,"subject":"..."}
+  → 201 {"id","type","token","expires_at","params"}
 
-- Tolerance is generous: `max(4 px, 8% of piece width)`. Trajectory scoring does the
-  work; strict position tolerance only punishes humans.
-- Two bands: hard-fail only physically impossible traces (non-monotone time, more
-  events than duration allows, drag shorter than 8 events); score the rest and send
-  the ambiguous band back to PoW rather than denying the user.
-- Backgrounds are 24-48 filled shapes over a gradient (not fBm), re-rolled when local
-  contrast around the notch is below 28/255, rendered into `Params` as inline PNG
-  capped at 48 KB.
-- Scoring parameters are jittered per deployment from
-  `HKDF(secret, "bouncer.v1", "slide-scoring")`; published-default thresholds would be
-  a published bypass.
+POST /_bouncer/verify      {"token":"...","answer":"..."}
+  → 200 {"ok":true,"expires_at"} + Set-Cookie: bouncer_pass
+  → 400 malformed | 403 wrong_answer|challenge_required|attempts_exceeded
+  → 409 replay | 410 expired | 503 store_unavailable
+```
+
+`Protect` accepts the pass from the cookie or the `X-Bouncer-Pass` header. Passes
+are single use by default (`WithReusablePass` opts out).
+
+## 7. PoW parameters
+
+- Preimage is 37 bytes, one SHA-256 block; keep it at or below 55 bytes.
+- Answer is exactly 16 lowercase hex characters; non-canonical forms are rejected.
+- Difficulty comes only from sealed state; a client cannot downgrade it.
+- Base 18 for browsers (p50 ~0.3 s, p99 ~2 s on a mid-range phone); the shipped
+  worker refuses degrees above 24.
+
+## 8. Slide parameters
+
+- Tolerance `max(4 px, 8% of piece width)`; trajectory scoring does the work.
+- Hard-fail only physically impossible traces; three statistical violations
+  reject; ambiguous cases are handled by escalating the next challenge to PoW.
+- Backgrounds are procedural (gradient + 24-48 shapes, seeded), re-rolled when
+  local contrast around the notch is below 12 luma units.
+- Scoring rules are published. Per-deployment jitter is the planned mitigation;
+  recorded human traces can still be replayed, which is why L0 exists.
+
+## 9. Known limits
+
+- A funded attacker with residential proxies, a human solver farm, or a tuned
+  headless browser is not stopped; cost and detection surface are raised.
+- No public break-rate numbers are shipped yet; the attack harness design is in
+  [`research/05-attack-baseline.md`](research/05-attack-baseline.md).
+- The memory store is per process. Multi-replica deployments need a shared store.
