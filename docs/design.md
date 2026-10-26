@@ -98,6 +98,7 @@ type Store interface {
 type Clock interface{ Now() time.Time }
 
 func WithSecret(secret []byte, previous ...[]byte) Option
+func WithSecretFile(path string) Option              // load or create with 0600
 func WithChallenger(ch Challenger) Option       // registered by ch.Tier()
 func WithStore(s Store) Option                  // default bounded memory
 func WithStoreFailure(m FailureMode) Option     // Consume, default FailClosed
@@ -119,7 +120,8 @@ Subpackages:
   procedural backgrounds and trajectory scoring.
 - `store/memory`: the default bounded `Store` (65,536 entries, sharded).
 - `store/storetest`, `challengetest`: contract suites for third-party adapters.
-- `httpx`: `ChallengeHandler`, `VerifyHandler`, `Protect`, `VerifyPass`,
+- `httpx`: `Guard` (the drop-in: endpoints + embedded widget + interstitial),
+  `ChallengeHandler`, `VerifyHandler`, `Protect`, `VerifyPass`, `RequirePass`,
   `FromContext`, `StatusCode`, cookie options.
 - `web`: zero-dependency browser solver (worker + helper, no build step).
 
@@ -140,6 +142,12 @@ POST /_bouncer/verify      {"token":"...","answer":"..."}
 
 `Protect` accepts the pass from the cookie or the `X-Bouncer-Pass` header. Passes
 are single use by default (`WithReusablePass` opts out).
+
+`httpx.NewGuard(gate)` serves `/_bouncer/{challenge,verify,widget.js,worker.js}`
+and gates everything else. A browser navigation without a pass receives an
+interstitial that solves the challenge and reloads; API calls receive 403 JSON.
+The widget and worker are embedded in the binary, so a deployment has no static
+asset to copy and no frontend build step.
 
 ## 7. PoW parameters
 
