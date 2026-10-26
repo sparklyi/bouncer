@@ -21,8 +21,18 @@ so that "better" is a number, not an adjective.
 | Layer | Mechanism | Stops |
 | --- | --- | --- |
 | L0 state | Sealed ticket, answer never leaves the server, one-time redemption, attempt budget, subject binding, TTL | replay, brute force, cross-session reuse |
-| L1 cost | Proof of work with an escalation ladder (16 → 28 bits) | cheap scripts, credential stuffing, form spam |
+| L1 cost | Proof of work, degree 18 → 24 as failures accumulate | cheap scripts, credential stuffing, form spam |
 | L2 interaction | Slide challenge scored server-side on trajectory features | headless browsers, coordinate-replay scripts |
+
+L1 is a rate limiter, not an economic wall: 18 bits costs a browser ~0.3 s and a 4090
+~40 µs. The README will publish measured cost per 1,000 successful breaks instead of
+adjectives.
+
+## Honest limits
+
+It raises the cost of automated abuse; it does not stop a funded, targeted attacker
+with residential proxies and human solvers, and it does not detect "human or AI".
+Worst-case numbers go in the attack baseline, not in a marketing sentence.
 
 ## Non-goals
 
@@ -32,7 +42,8 @@ no fingerprinting, no third-party calls. It proves computational work, not human
 ## Documentation
 
 - [`docs/design.md`](docs/design.md) — approved design, protocol, public API
-- [`docs/research/`](docs/research/) — research notes per stage
+- [`docs/research/`](docs/research/) — research notes per stage, including the
+  corrections they forced on the design
 
 ## License
 
