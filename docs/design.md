@@ -140,8 +140,10 @@ POST /_bouncer/verify      {"token":"...","answer":"..."}
   → 409 replay | 410 expired | 503 store_unavailable
 ```
 
-`Protect` accepts the pass from the cookie or the `X-Bouncer-Pass` header. Passes
-are single use by default (`WithReusablePass` opts out).
+`Protect` accepts the pass from the cookie or the `X-Bouncer-Pass` header. The
+low-level `VerifyPass` consumes a pass on first use; `Guard` reuses it for the
+pass TTL so that page loads with subresources do not exhaust it, and
+`WithPassSingleUse` opts a deployment back into one verification per request.
 
 `httpx.NewGuard(gate)` serves `/_bouncer/{challenge,verify,widget.js,worker.js}`
 and gates everything else. A browser navigation without a pass receives an

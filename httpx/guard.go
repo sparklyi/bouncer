@@ -44,7 +44,11 @@ func NewGuard(g *bouncer.Gate, opts ...Option) *Guard {
 		ChallengeHandler(g, WithDefaultTier(o.tier)).ServeHTTP(w, r)
 	})
 	guard.mux.HandleFunc("POST "+o.prefix+"/verify", func(w http.ResponseWriter, r *http.Request) {
-		VerifyHandler(g, passOptions(o)...).ServeHTTP(w, r)
+		verifyOpts := []Option{WithCookieName(o.cookieName), WithPassTTL(o.passTTL), WithCookiePath(o.path), WithSecure(o.secure)}
+		if !o.singleUse {
+			verifyOpts = append(verifyOpts, WithReusablePass())
+		}
+		VerifyHandler(g, verifyOpts...).ServeHTTP(w, r)
 	})
 	guard.mux.HandleFunc("GET "+o.prefix+"/widget.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
@@ -160,9 +164,12 @@ func normalizePrefix(prefix string) string {
 	return trimmed
 }
 
+// Guard reuses a pass for its whole TTL by default, like a browser-check
+// cookie: a page load with many subresources must not consume the pass on the
+// first request. WithPassSingleUse opts into one verification per request.
 func passOptions(o options) []Option {
 	opts := []Option{WithCookieName(o.cookieName), WithPassTTL(o.passTTL), WithCookiePath(o.path), WithSecure(o.secure)}
-	if o.reusePass {
+	if !o.singleUse {
 		opts = append(opts, WithReusablePass())
 	}
 	return opts

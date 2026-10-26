@@ -35,6 +35,7 @@ type options struct {
 	path       string
 	secure     bool
 	reusePass  bool
+	singleUse  bool
 	prefix     string
 	tier       bouncer.Tier
 	exempt     func(*http.Request) bool
@@ -84,9 +85,15 @@ func WithSecure(secure bool) Option {
 }
 
 // WithReusablePass lets one pass authorise several requests until it expires.
-// The default consumes the pass on first use.
+// The low-level VerifyPass default consumes the pass on first use.
 func WithReusablePass() Option {
 	return func(o *options) { o.reusePass = true }
+}
+
+// WithPassSingleUse makes every protected request consume its pass. Use it for
+// endpoints where each attempt must pay for a fresh challenge, such as a login.
+func WithPassSingleUse() Option {
+	return func(o *options) { o.singleUse = true }
 }
 
 type challengeRequest struct {

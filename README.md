@@ -25,6 +25,11 @@ Single-page apps can await the check before a protected request:
 await bouncer.verify();
 ```
 
+A pass is reusable for its 10-minute TTL, like a browser-check cookie, so a page
+with many subresources does not burn it on the first request. For endpoints where
+every attempt must pay for a fresh challenge (a login, a password reset), add
+`httpx.WithPassSingleUse()`.
+
 ### With your framework
 
 | Stack | Wiring |
