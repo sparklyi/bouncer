@@ -1,19 +1,52 @@
 # bouncer
 
-Human verification for Go: **zero dependencies, no image CAPTCHAs by default,
-and a server-side cost of one SHA-256 per check.**
+Drop-in human verification for Go. **One middleware, no image CAPTCHA, zero
+dependencies.**
+
+## Three lines
 
 ```go
-g, _ := bouncer.New(bouncer.WithSecret(key)) // 32+ random bytes
-mux.Handle("POST /_bouncer/challenge", httpx.ChallengeHandler(g))
-mux.Handle("POST /_bouncer/verify", httpx.VerifyHandler(g))
-mux.Handle("/app/", httpx.Protect(g, app))
+gate, _ := bouncer.New(bouncer.WithSecretFile("data/bouncer.key")) // created on first run
+guard := httpx.NewGuard(gate)
+http.ListenAndServe(":8080", guard.Protect(mux))
 ```
 
-```js
-import { solveChallenge } from "./bouncer.js";
-await solveChallenge(); // sets the bouncer_pass cookie
+That is the whole integration. The guard serves the challenge endpoints and the
+browser widget, gates every route, and hands unverified page loads a
+self-solving interstitial. Add one tag to keep navigations instant:
+
+```html
+<script src="/_bouncer/widget.js" defer></script>
 ```
+
+Single-page apps can await the check before a protected request:
+
+```js
+await bouncer.verify();
+```
+
+### With your framework
+
+| Stack | Wiring |
+| --- | --- |
+| `net/http`, `chi` | `guard.Protect(mux)` |
+| Gin | `router.Any("/_bouncer/*any", gin.WrapH(guard.Handler()))`; call `guard.RequirePass(c.Request)` on the endpoint you protect |
+| Echo | `e.Use(echo.WrapMiddleware(guard.Middleware()))`; `guard.RequirePass(c.Request())` where you keep your own error format |
+| Any custom router | mount `guard.Handler()` and call `guard.RequirePass(r)` |
+
+Nothing else is required: no secret in the environment, no frontend build step,
+no template change, no i18n keys.
+
+## How it works
+
+| Layer | What it does | Server cost |
+| --- | --- | --- |
+| **L0 state** | AEAD-sealed ticket; the answer never leaves the server; atomic one-time redemption; attempt budgets; subject binding; short TTL | one atomic store op |
+| **L1 cost** | proof of work, 18 bits by default and escalating with failures | one SHA-256 |
+| **L2 interaction** | slide puzzle scored on the pointer trajectory; the target `x` is sealed and never sent | a few dozen float ops |
+
+`Escalate(failures)` moves from 18 to 24 bits and then to the slide challenge.
+The library does not implement a risk engine; the caller owns the signals.
 
 ## Why another one
 
@@ -28,17 +61,6 @@ Every Go CAPTCHA library we looked at shares at least one structural defect:
 | `afocus/captcha` | returns the answer, no store, not even a `go.mod` |
 
 bouncer fixes the trust boundary first and the puzzle second.
-
-## How it works
-
-| Layer | What it does | Server cost |
-| --- | --- | --- |
-| **L0 state** | AEAD-sealed ticket; the answer never leaves the server; atomic one-time redemption; attempt budgets; subject binding; short TTL | one atomic store op |
-| **L1 cost** | proof of work, 18 bits by default and escalating with failures | one SHA-256 |
-| **L2 interaction** | slide puzzle scored on the pointer trajectory; the target `x` is sealed and never sent | a few dozen float ops |
-
-`Escalate(failures)` moves from 18 to 24 bits and then to the slide challenge.
-The library does not implement a risk engine; the caller owns the signals.
 
 ## Measured on this repository
 
@@ -88,7 +110,7 @@ Requires Go 1.26 or newer. The core module has no `go.sum`.
 | `slide` | procedural slide challenge with server-side trajectory scoring |
 | `store/memory` | default bounded store (65,536 entries, sharded, swept) |
 | `store/storetest`, `challengetest` | contract suites for third-party adapters |
-| `httpx` | `net/http` handlers, `Protect` middleware, `VerifyPass`, status mapping |
+| `httpx` | drop-in `Guard` (endpoints, widget, interstitial), `Protect`, `RequirePass`, status mapping |
 | `web` | zero-dependency browser solver; no build step, runs in a worker |
 
 A Redis store lives in a separate module so that the core never gains a

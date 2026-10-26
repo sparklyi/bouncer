@@ -20,6 +20,7 @@ import (
 
 const (
 	defaultCookieName = "bouncer_pass"
+	defaultPrefix     = "/_bouncer"
 	defaultPassTTL    = 10 * time.Minute
 	passHeader        = "X-Bouncer-Pass"
 	maxBody           = 64 << 10
@@ -34,10 +35,19 @@ type options struct {
 	path       string
 	secure     bool
 	reusePass  bool
+	prefix     string
+	tier       bouncer.Tier
+	exempt     func(*http.Request) bool
 }
 
 func defaultOptions() options {
-	return options{cookieName: defaultCookieName, passTTL: defaultPassTTL, path: "/"}
+	return options{
+		cookieName: defaultCookieName,
+		passTTL:    defaultPassTTL,
+		path:       "/",
+		prefix:     defaultPrefix,
+		tier:       bouncer.TierPoW,
+	}
 }
 
 // WithCookieName sets the pass cookie name.
@@ -128,7 +138,7 @@ func ChallengeHandler(g *bouncer.Gate, opts ...Option) http.Handler {
 			writeError(w, http.StatusBadRequest, "malformed", "invalid request body")
 			return
 		}
-		tier, err := parseTier(req.Tier)
+		tier, err := parseTier(req.Tier, o.tier)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "malformed", "unknown tier")
 			return
@@ -292,9 +302,11 @@ func failure(err error) (int, string) {
 	}
 }
 
-func parseTier(s string) (bouncer.Tier, error) {
+func parseTier(s string, fallback bouncer.Tier) (bouncer.Tier, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "pow":
+	case "":
+		return fallback, nil
+	case "pow":
 		return bouncer.TierPoW, nil
 	case "slide":
 		return bouncer.TierSlide, nil

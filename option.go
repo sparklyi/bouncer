@@ -9,6 +9,7 @@ import (
 type Option func(*gateConfig)
 
 type gateConfig struct {
+	err            error
 	secret         []byte
 	previous       [][]byte
 	challengers    map[Tier]Challenger
@@ -31,6 +32,20 @@ func WithSecret(secret []byte, previous ...[]byte) Option {
 		for i, key := range previous {
 			c.previous[i] = append([]byte(nil), key...)
 		}
+	}
+}
+
+// WithSecretFile loads the master secret from path, generating it with 0600
+// permissions when the file does not exist. It is the zero-configuration
+// alternative to WithSecret.
+func WithSecretFile(path string) Option {
+	return func(c *gateConfig) {
+		key, err := LoadOrCreateSecret(path)
+		if err != nil {
+			c.err = err
+			return
+		}
+		c.secret = key
 	}
 }
 

@@ -52,6 +52,9 @@ func New(opts ...Option) (*Gate, error) {
 			opt(&cfg)
 		}
 	}
+	if cfg.err != nil {
+		return nil, wrap("new", cfg.err)
+	}
 	if len(cfg.secret) < keyLen {
 		return nil, wrap("new", ErrNoSecret)
 	}
